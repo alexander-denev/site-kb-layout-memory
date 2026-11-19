@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tab Layout Memory</title>
+<style>
+  body { font: 14px/1.45 system-ui, "Segoe UI", sans-serif; margin: 16px; min-width: 420px; color: #1f1f1f; }
+  @media (prefers-color-scheme: dark) { body { color: #e3e3e3; background: #202124; } select { background: #303134; color: inherit; } }
+  h2 { font-size: 15px; margin: 18px 0 8px; }
+  .status { padding: 10px 12px; border-radius: 8px; background: rgba(127,127,127,.12); }
+  .ok::before { content: "● "; color: #1e8e3e; }
+  .bad::before { content: "● "; color: #d93025; }
+  label { display: block; margin: 6px 0; }
+  select { margin-left: 24px; margin-top: 4px; padding: 3px 6px; }
+  .hint { color: #777; font-size: 12.5px; }
+  button { margin-top: 8px; padding: 5px 12px; }
+  code { font-size: 12px; }
+</style>
+</head>
+<body>
+  <div id="status" class="status">Checking the helper program…</div>
+
+  <h2>When a tab is opened for the first time</h2>
+  <label><input type="radio" name="mode" value="keep"> Keep whatever layout is active (like Windows does for a new window)</label>
+  <label><input type="radio" name="mode" value="fixed"> Always start with:
+    <br><select id="layout" disabled></select>
+  </label>
+
+  <h2>Memory</h2>
+  <p class="hint">Layouts are remembered per tab until the browser closes.</p>
+  <button id="forget">Forget all remembered layouts</button> <span id="forgot" class="hint"></span>
+
+  <script src="options.js"></script>
+</body>
+</html>
