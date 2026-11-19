@@ -24,6 +24,10 @@
   <label><input type="radio" name="newSite" value="keep"> Keeps the layout that's active, and remembers it</label>
   <label><input type="radio" name="newSite" value="fixed"> Starts with <select id="newSiteLayout"></select></label>
 
+  <h2>Browser pages <span class="muted">(new tab page, chrome://extensions, local files…)</span></h2>
+  <label><input type="radio" name="browserPages" value="remember"> Remember a layout for them like for sites <span class="muted">(all new tabs share one; other pages are grouped like chrome:// pages, or each page separately in subdomain mode)</span></label>
+  <label><input type="radio" name="browserPages" value="ignore"> Leave the layout as it is <span class="muted">(unless you remember each tab)</span></label>
+
   <h2>Remembered sites <span class="muted" id="count"></span></h2>
   <p class="hint" id="tabNote"></p>
   <p><input type="text" id="filter" placeholder="Filter…" style="width: 220px"></p>

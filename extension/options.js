@@ -16,6 +16,7 @@ async function render() {
 
   for (const r of document.querySelectorAll('input[name="scope"]')) r.checked = r.value === s.scope;
   for (const r of document.querySelectorAll('input[name="newSite"]')) r.checked = r.value === s.newSiteMode;
+  for (const r of document.querySelectorAll('input[name="browserPages"]')) r.checked = r.value === s.browserPages;
   fillLayoutSelect($("newSiteLayout"), layouts, s.newSiteLayout || status.host.active || (layouts[0] && layouts[0].hkl));
   $("newSiteLayout").disabled = s.newSiteMode !== "fixed";
 
@@ -26,8 +27,10 @@ async function render() {
   $("overridesBox").classList.toggle("hidden", entries.length === 0);
   for (const [domain, scope] of entries) {
     const tr = tbody.insertRow();
-    tr.insertCell().textContent = domain;
-    tr.insertCell().textContent = { host: "Each subdomain", tab: "Each tab", domain: "Whole domain" }[scope] || scope;
+    tr.insertCell().textContent = placeLabel(domain);
+    const web = !domain.includes(":");
+    tr.insertCell().textContent =
+      { host: web ? "Each subdomain" : "Each page", tab: "Each tab", domain: web ? "Whole domain" : "All together" }[scope] || scope;
     const btn = document.createElement("button");
     btn.textContent = "Use default";
     btn.onclick = async () => { await ask("setDomainScope", { domain, scope: null }); render(); };
@@ -47,10 +50,11 @@ async function renderSites() {
   $("count").textContent = keys.length ? `(${keys.length})` : "";
   const tbody = $("sites");
   tbody.innerHTML = "";
-  for (const key of keys.filter((k) => !filter || k.includes(filter))) {
+  const matches = (k) => !filter || k.includes(filter) || placeLabel(k).toLowerCase().includes(filter);
+  for (const key of keys.filter(matches)) {
     const entry = sites[key];
     const tr = tbody.insertRow();
-    tr.insertCell().textContent = key;
+    tr.insertCell().textContent = placeLabel(key);
 
     const sel = document.createElement("select");
     fillLayoutSelect(sel, layouts, entry.hkl, entry.hkl ? "" : "Not set");
@@ -78,6 +82,9 @@ for (const r of document.querySelectorAll('input[name="newSite"]')) {
     await chrome.storage.sync.set({ newSiteMode: r.value, newSiteLayout: $("newSiteLayout").value });
     $("newSiteLayout").disabled = r.value !== "fixed";
   };
+}
+for (const r of document.querySelectorAll('input[name="browserPages"]')) {
+  r.onchange = () => ask("setBrowserPages", { mode: r.value });
 }
 $("newSiteLayout").onchange = () => chrome.storage.sync.set({ newSiteLayout: $("newSiteLayout").value });
 $("filter").oninput = renderSites;

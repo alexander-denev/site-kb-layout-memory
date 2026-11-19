@@ -25,7 +25,10 @@ The browser will say the extension can "read your browsing history". It needs th
 - **Applying:** a site's layout is applied when you switch to its tab, when a tab navigates to it, when you switch browser windows, and when you come back to the browser from another app. That last one undoes any layout change made in the other app.
 - **New sites:** by default a site you haven't visited keeps the current layout, and that layout is saved for it. In settings you can make every new site start with one layout instead.
 - **Locking:** the popup's **Always use this layout here** option stops a site from saving your changes. Use it for a site where you switch layouts temporarily but always want to come back to one.
-- **Non-website pages:** in domain or subdomain mode, the new tab page, browser settings and local files leave the layout as it is. In per-tab mode they remember a layout like any other tab.
+- **Browser pages:** the new tab page, `chrome://` / `edge://` pages, local files and extension pages remember a layout too, treated like sites:
+  - **New tab:** every new tab page (`chrome://newtab`, `edge://newtab`, `about:blank`…) shares one layout, listed as *New tab page*. That way you can, say, always type addresses in English.
+  - **Other browser pages** are grouped by scheme, the way subdomains group under a domain. In domain mode all `chrome://` pages share one layout. In subdomain mode, `chrome://extensions` and `chrome://settings` each get their own. You can override this from the popup, like for any domain. For example, choose *each page* or *each tab* for `chrome://` pages only.
+  - In settings, you can set browser pages to **leave the layout as it is** instead (the old behavior). Then they only get a layout in per-tab mode.
 - **Saved sites list:** the settings page shows every remembered site, where you can change, lock or forget each one.
 - **Other apps:** this tool doesn't affect them. Windows' own "Let me use a different input method for each app window" setting can be on or off.
 
@@ -41,6 +44,6 @@ Remove the extension from the browser (this also deletes its saved sites), doubl
 
 ## Technical notes
 
-- `extension/background.js` turns each tab into a key: the domain or subdomain, using [tldts](https://github.com/remusao/tldts) (MIT, bundled in `vendor/`), or `tab:<id>`. Site keys are stored in `chrome.storage.local`, which is written to disk in your browser profile. Tab keys are stored in `chrome.storage.session`, which is kept in memory and cleared when the browser closes. A tab's entry is deleted when the tab closes. Settings live in `chrome.storage.sync`.
+- `extension/background.js` turns each tab into a key: the domain or subdomain, using [tldts](https://github.com/remusao/tldts) (MIT, bundled in `vendor/`), or `tab:<id>`. Browser pages get keys that contain `:` so they can't clash with a domain: `about:newtab` for every new tab page, `chrome://` for the group and `chrome://extensions` for a single page. Site keys are stored in `chrome.storage.local`, which is written to disk in your browser profile. Tab keys are stored in `chrome.storage.session`, which is kept in memory and cleared when the browser closes. A tab's entry is deleted when the tab closes. Settings live in `chrome.storage.sync`.
 - `host/TabLayoutHost.cs` is a native messaging host that the browser starts with the extension. It switches layouts by posting `WM_INPUTLANGCHANGEREQUEST` to the browser window and reads them with `GetKeyboardLayout`. A watcher thread checks the layout every 250 ms while the browser is the window in front and reports changes, so they're saved even if you close the browser right after changing layout. Every switch increments a counter, so a change reported just before a switch can't be saved to the wrong site.
 - Nothing starts with Windows. The installer only writes registry keys under `HKCU\Software\<browser>\NativeMessagingHosts`, and the browser launches the helper itself.

@@ -10,7 +10,7 @@
 
   <div id="nosite" class="hidden">
     <h1>Not a website</h1>
-    <p class="muted">Pages like the new tab page or browser settings don't have a remembered layout. The layout stays as it is here. (They get one if you choose <i>each tab separately</i> in settings.)</p>
+    <p class="muted">Browser pages like the new tab page or settings are set to keep whatever layout is active. You can have them remember a layout in settings, or choose <i>each tab</i> there.</p>
   </div>
 
   <div id="site" class="hidden">
@@ -27,7 +27,7 @@
     <div id="scopeBox">
       <h2 id="scopeTitle"></h2>
       <label><input type="radio" name="scope" value="domain"> <span id="scopeDomain"></span></label>
-      <label><input type="radio" name="scope" value="host"> Separate layout for each subdomain</label>
+      <label id="scopeHostRow"><input type="radio" name="scope" value="host"> <span id="scopeHost">Separate layout for each subdomain</span></label>
       <label><input type="radio" name="scope" value="tab"> Separate layout for each tab <span class="muted">(forgotten when the browser closes)</span></label>
     </div>
   </div>

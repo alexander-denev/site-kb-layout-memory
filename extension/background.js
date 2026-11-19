@@ -6,6 +6,10 @@
 //   tab    - each browser tab, whatever site it shows
 // The choice is global, with optional per-domain overrides.
 //
+// Browser pages are places too (unless turned off in settings): every new tab page
+// shares "about:newtab", and other pages group by scheme the way subdomains group
+// by domain: "chrome://" is the domain, "chrome://extensions" the subdomain.
+//
 // Domain/subdomain layouts are saved on disk (storage.local) and survive reboots.
 // Tab layouts live in storage.session: tab ids change every browser session, so
 // they are forgotten when the browser closes, the way Windows forgets a closed window.
@@ -22,7 +26,12 @@ const DEFAULT_SETTINGS = {
   siteScopes: {},         // per-domain override: { "google.com": "host", "chatgpt.com": "tab" }
   newSiteMode: "keep",    // "keep" = start with the active layout, "fixed" = use newSiteLayout
   newSiteLayout: "",
+  browserPages: "remember", // "remember" = new tab / chrome:// pages are places too, "ignore" = leave the layout alone
 };
+
+// All new tab pages share this key. Keys of browser pages contain ":", so they
+// can never clash with a website's domain.
+const NEW_TAB_KEY = "about:newtab";
 
 // ---------------------------------------------------------------------------
 // Helper connection
@@ -152,24 +161,51 @@ async function learn(key, hkl) {
 
 // ---------------------------------------------------------------------------
 // Which place is this tab?
-// Returns { key, scope, domain, host } or null for "leave the layout alone".
+// Returns { key, scope, kind, domain, host } or null for "leave the layout alone".
+//   kind: "web" | "newtab" | "browser" (chrome://, edge://, about:, file://, extension pages)
 // ---------------------------------------------------------------------------
+function isNewTab(u) {
+  const host = u.host.toLowerCase();
+  if (u.protocol === "about:") return /^(blank|newtab)$/i.test(u.pathname);
+  if (u.protocol === "chrome-search:") return /-ntp$/.test(host); // chrome-search://local-ntp
+  if (host === "vivaldi-webui") return u.pathname.startsWith("/startpage");
+  return ["newtab", "new-tab-page", "startpage", "startpageshared"].includes(host);
+}
+
+// Browser pages are grouped like sites: the scheme plays the domain
+// ("chrome://") and the page plays the subdomain ("chrome://extensions").
+function browserPlace(u) {
+  if (isNewTab(u)) return { kind: "newtab", domain: NEW_TAB_KEY, host: NEW_TAB_KEY };
+  if (u.protocol === "file:") return { kind: "browser", domain: "file://", host: "file://" };
+  const domain = u.protocol + "//";
+  if (u.host) return { kind: "browser", domain, host: domain + u.host.toLowerCase() };
+  // about:version -> "about:version"; data:, blob: etc. only get the group.
+  const page = /^[\w-]+$/.test(u.pathname) ? u.protocol + u.pathname.toLowerCase() : domain;
+  return { kind: "browser", domain, host: page };
+}
+
 function placeInfo(tab, settings) {
   let u = null;
-  try { u = new URL(tab.url || ""); } catch (_) { /* no URL yet */ }
+  // A tab that's still loading has only a pendingUrl.
+  try { u = new URL(tab.url || tab.pendingUrl || ""); } catch (_) { /* no URL yet */ }
   const isWeb = u && (u.protocol === "http:" || u.protocol === "https:") && u.hostname;
 
-  if (!isWeb) {
-    // New tab page, browser settings, local files: no domain. They only get a
+  let place;
+  if (isWeb) {
+    const host = u.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+    const domain = tldts.getDomain(host, { allowPrivateDomains: true }) || host; // localhost, IPs -> as is
+    place = { kind: "web", domain, host };
+  } else if (u && settings.browserPages !== "ignore") {
+    place = browserPlace(u);
+  } else {
+    // Unknown URL, or browser pages are set to be left alone: they only get a
     // layout when everything is per tab.
-    return settings.scope === "tab" ? { key: tabKey(tab.id), scope: "tab", domain: null, host: null } : null;
+    return settings.scope === "tab" ? { key: tabKey(tab.id), scope: "tab", kind: "other", domain: null, host: null } : null;
   }
 
-  const host = u.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
-  const domain = tldts.getDomain(host, { allowPrivateDomains: true }) || host; // localhost, IPs -> as is
-  const scope = settings.siteScopes[domain] || settings.scope;
-  const key = scope === "tab" ? tabKey(tab.id) : scope === "host" ? host : domain;
-  return { key, scope, domain, host };
+  const scope = settings.siteScopes[place.domain] || settings.scope;
+  const key = scope === "tab" ? tabKey(tab.id) : scope === "host" ? place.host : place.domain;
+  return { key, scope, ...place };
 }
 
 async function savedLayout(info) {
@@ -367,6 +403,13 @@ const handlers = {
     if (scope && scope !== settings.scope) siteScopes[domain] = scope;
     else delete siteScopes[domain];
     await chrome.storage.sync.set({ siteScopes });
+    await reapplyFront(true);
+    return { ok: true };
+  },
+
+  // mode: "remember" | "ignore"
+  async setBrowserPages({ mode }) {
+    await chrome.storage.sync.set({ browserPages: mode });
     await reapplyFront(true);
     return { ok: true };
   },

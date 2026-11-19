@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Site Layout Memory",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Remembers your Windows keyboard layout per site, subdomain or tab. Site layouts survive restarts.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArAeyL3pqFm+vCyXQeFEU0DOEWL0Qpdv8cROCpHci5b+++wepWFBsLjGMmTaak4+ePBIHpXtLNZalA0quJO+q0MZ3Wz8Atfdx1+27mMFhdb9wxfQ7Z7FTVJJ+6vwO3CFIXy6GFPRdHchnS+gwMUSoBbngPF/ii5r4WEBhndt/uuHS4yL/sEni+C3sgoeMroIPfbSnleVUtdsE0p/QYcrFxkdQDveWjEK1OGLXpXwotbsTKPLX7Ipujp0CbossQJKja9X/G3+5m3S9P4YF4uyS0jTxV9M/sTXlYkd2u7vxOrmw1f+EWjiF7xQ8rd4t0O3Oe1F662xFGppZLAsF5evFtQIDAQAB",
   "minimum_chrome_version": "110",

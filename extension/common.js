@@ -3,6 +3,15 @@ function ask(type, extra = {}) {
   return chrome.runtime.sendMessage({ type, ...extra });
 }
 
+// Readable name for a saved place key ("google.com", "chrome://", "about:newtab", ...).
+function placeLabel(key) {
+  if (key === "about:newtab") return "New tab page";
+  if (key === "file://") return "Local files";
+  if (key.endsWith("://" + chrome.runtime.id)) return "Site Layout Memory settings";
+  if (key.endsWith("://")) return `${key} pages`;
+  return key;
+}
+
 function layoutName(hkl, layouts) {
   const found = layouts.find((l) => l.hkl.toLowerCase() === String(hkl).toLowerCase());
   return found ? found.name : hkl ? `Layout ${hkl} (not installed)` : "";
