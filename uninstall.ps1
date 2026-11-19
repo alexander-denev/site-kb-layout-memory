@@ -1,4 +1,4 @@
-# Tab Layout Memory - removes the helper registration for the current user.
+# Site Layout Memory - removes the helper registration for the current user.
 $HostName = 'com.tablayoutmemory.host'
 foreach ($k in 'HKCU:\Software\Google\Chrome\NativeMessagingHosts',
                'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts',

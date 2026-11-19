@@ -1,40 +1,42 @@
-# Tab Layout Memory
+# Site Layout Memory
 
-Makes each browser tab remember its own Windows keyboard layout, the way Windows can remember one per app window. If you type Ukrainian in one tab and English in another, switching tabs switches the layout back for you.
+Each website remembers its own Windows keyboard layout. If you write Ukrainian on one site and English on another, switching tabs, navigating, or coming back to the browser switches the layout for you. The layouts are saved to disk, so they survive browser restarts and reboots.
 
 Works with Chrome, Edge, Brave and other Chromium-based browsers on Windows 10/11.
 
 ## Install (about 2 minutes)
 
-1. Unzip this folder somewhere permanent, such as `Documents\TabLayoutMemory`. The browser runs the helper from this folder, so don't delete or move it later.
+1. Unzip this folder somewhere permanent, such as `Documents\SiteLayoutMemory`. The browser runs the helper from this folder, so don't move or delete it later.
 2. Double-click **Install.cmd**. It builds the small helper program with the C# compiler built into Windows and registers it with your browsers. You don't need admin rights or any downloads.
-3. In the browser, open `chrome://extensions` (or `edge://extensions` or `brave://extensions`), turn on **Developer mode**, click **Load unpacked**, and choose the `extension` folder.
+3. Open `chrome://extensions` (or `edge://extensions` or `brave://extensions`), turn on **Developer mode**, click **Load unpacked**, and choose the `extension` folder.
    The extension ID should be `nfoakjoifinjnlmanogdmmaobcjneilh`. The helper only accepts that ID.
-4. Click the extension's toolbar icon to open its settings. They should say **Helper connected**.
+4. Pin the extension and click its icon. If the popup shows a red "helper isn't reachable" message, run Install.cmd again, then reload the extension.
 
-If the settings say the helper isn't reachable, run Install.cmd again, then click the reload icon on the extension card.
+The browser will say the extension can "read your browsing history". It needs that to see which site a tab is on. Nothing leaves your computer: the site list is stored in your browser profile.
 
 ## How it behaves
 
-- **Switching tabs:** the layout you were using is saved for the tab you leave, and the layout saved for the tab you open is restored.
-- **New tabs:** by default a new tab keeps the current layout, just like a new window in Windows. In settings you can make every new tab start with a specific layout instead.
-- **Several browser windows:** these work the same way, because switching windows counts as switching to that window's active tab.
-- **Other apps:** this tool doesn't touch them. To have Windows also remember a layout per app, turn on *Settings → Time & language → Typing → Advanced keyboard settings → "Let me use a different input method for each app window"*. The extension works with this setting on or off.
-- **Memory:** the remembered layouts last until you close the browser, the same way Windows forgets a window's layout when the window closes.
+- **What a "site" is:** by default the whole domain, so `mail.google.com` and `docs.google.com` are both `google.com`. Domains like `bbc.co.uk` and `rozetka.com.ua` are handled correctly using the Public Suffix List. In settings you can switch to *each subdomain separately*. From the popup you can override this for one domain, e.g. "split google.com, but keep everything else whole".
+- **Saving:** when you change the layout on a site (Alt+Shift, Win+Space, the taskbar), it's saved for that site within about a quarter second.
+- **Applying:** a site's layout is applied when you switch to its tab, when a tab navigates to it, when you switch browser windows, and when you come back to the browser from another app. That last one undoes any layout change made in the other app.
+- **New sites:** by default a site you haven't visited keeps the current layout, and that layout is saved for it. In settings you can make every new site start with one layout instead.
+- **Locking:** the popup's **Always use this layout here** option stops a site from saving your changes. Use it for a site where you switch layouts temporarily but always want to come back to one.
+- **Non-website pages:** the new tab page, browser settings and local files leave the layout as it is.
+- **Saved sites list:** the settings page shows every remembered site, where you can change, lock or forget each one.
+- **Other apps:** this tool doesn't affect them. Windows' own "Let me use a different input method for each app window" setting can be on or off.
 
 ## Limits
 
-- It switches keyboard **layouts and languages** (for example EN/UK/RU). It doesn't remember IME sub-modes, such as Japanese hiragana versus half-width.
-- Developer-mode extensions sometimes show a warning banner when the browser starts. You can dismiss it.
-- If you switch tabs while the browser isn't the active window (for example from a script), the layout switch waits until you return to the browser.
+- It switches keyboard **layouts and languages** (EN/UK/RU…). It doesn't remember IME sub-modes such as Japanese hiragana versus half-width.
+- Developer-mode extensions may show a warning banner when the browser starts. Dismiss it; don't click "disable".
+- If you remove a keyboard layout from Windows, sites saved with it simply aren't switched until you choose another layout for them.
 
 ## Uninstall
 
-Remove the extension from the browser, double-click **Uninstall.cmd**, then delete the folder.
+Remove the extension from the browser (this also deletes its saved sites), double-click **Uninstall.cmd**, then delete the folder.
 
-## How it works (for the curious)
+## Technical notes
 
-Windows tracks one keyboard layout per app, and every tab lives inside the same browser process, so Windows can't tell tabs apart. An extension can see tab switches but can't change the Windows layout, so this project uses two parts:
-
-- `extension/` is a Manifest V3 extension. It listens for tab and window switches and keeps a map from each tab to its layout.
-- `host/TabLayoutHost.cs` is a native messaging host. On each switch it reads the browser's active layout (`GetKeyboardLayout`) and requests the new one (`WM_INPUTLANGCHANGEREQUEST`). It only acts when the browser that launched it is the window in front.
+- `extension/background.js` maps each URL to a site key using [tldts](https://github.com/remusao/tldts) (MIT, bundled in `vendor/`). It stores `{site: layout}` in `chrome.storage.local`, which is written to disk in your browser profile. Settings live in `chrome.storage.sync`.
+- `host/TabLayoutHost.cs` is a native messaging host that the browser starts with the extension. It switches layouts by posting `WM_INPUTLANGCHANGEREQUEST` to the browser window and reads them with `GetKeyboardLayout`. A watcher thread checks the layout every 250 ms while the browser is the window in front and reports changes, so they're saved even if you close the browser right after changing layout. Every switch increments a counter, so a change reported just before a switch can't be saved to the wrong site.
+- Nothing starts with Windows. The installer only writes registry keys under `HKCU\Software\<browser>\NativeMessagingHosts`, and the browser launches the helper itself.

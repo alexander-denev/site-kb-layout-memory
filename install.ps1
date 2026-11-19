@@ -1,4 +1,4 @@
-# Tab Layout Memory - installer for the Windows helper.
+# Site Layout Memory - installer for the Windows helper.
 # Builds the helper with the C# compiler built into Windows and registers it
 # with Chrome, Edge, Brave and Chromium for the current user (no admin needed).
 
@@ -12,7 +12,7 @@ $source   = Join-Path $hostDir 'TabLayoutHost.cs'
 $exe      = Join-Path $hostDir 'TabLayoutHost.exe'
 $manifest = Join-Path $hostDir "$HostName.json"
 
-Write-Host 'Tab Layout Memory setup' -ForegroundColor Cyan
+Write-Host 'Site Layout Memory setup' -ForegroundColor Cyan
 
 # 1. Find the built-in C# compiler (.NET Framework 4.x ships with Windows 10/11).
 $csc = @(
@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { throw 'Building the helper 
 # 3. Write the native messaging manifest (UTF-8 without BOM).
 $json = [ordered]@{
     name            = $HostName
-    description     = 'Tab Layout Memory helper: reads and switches the Windows keyboard layout'
+    description     = 'Site Layout Memory helper: reads and switches the Windows keyboard layout'
     path            = $exe
     type            = 'stdio'
     allowed_origins = @("chrome-extension://$ExtensionId/")

@@ -1,4 +1,4 @@
-// Tab Layout Memory — Windows helper (Chrome native messaging host).
+// Site Layout Memory - Windows helper (Chrome native messaging host).
 //
 // Written for the C# 5 compiler that ships inside Windows (.NET Framework 4.x),
 // so it builds on any Windows 10/11 PC without installing anything.
@@ -8,6 +8,11 @@
 //   {"id":1,"cmd":"swap","target":"0x4220422"}  -> read the browser's current layout,
 //                                                  then switch to target (if given)
 //   {"id":2,"cmd":"list"}                        -> installed layouts + active one
+// Events sent to the extension on their own:
+//   {"event":"layout","hkl":"0x4220422","gen":5} -> you changed the layout while the
+//                                                  browser was in front
+// `gen` counts swaps, so the extension can drop a change report that was
+// overtaken by a switch to another site.
 //
 // Layout handles (HKL) travel as hex strings, e.g. "0x4090409".
 
@@ -23,7 +28,8 @@ using Microsoft.Win32;
 
 static class TabLayoutHost
 {
-    const string Version = "1.0.0";
+    const string Version = "2.0.0";
+    const int PollMs = 250;
     const uint WM_INPUTLANGCHANGEREQUEST = 0x0050;
     const uint TH32CS_SNAPPROCESS = 0x00000002;
 
@@ -68,6 +74,12 @@ static class TabLayoutHost
     static Stream stdout;
     static HashSet<uint> browserPids = new HashSet<uint>();
 
+    // Shared between the message loop and the watcher thread.
+    static readonly object SyncLock = new object();
+    static IntPtr baseline = IntPtr.Zero;   // last layout we know about
+    static bool browserWasInFront = false;
+    static int generation = 0;
+
     static int Main()
     {
         try
@@ -76,6 +88,14 @@ static class TabLayoutHost
             catch (Exception ex) { Console.Error.WriteLine("TabLayoutHost: could not identify the browser process: " + ex.Message); }
             Stream stdin = Console.OpenStandardInput();
             stdout = Console.OpenStandardOutput();
+
+            if (browserPids.Count > 0)
+            {
+                Thread watcher = new Thread(WatchLayout);
+                watcher.IsBackground = true; // dies with the process
+                watcher.Start();
+            }
+
             while (true)
             {
                 string msg = ReadMessage(stdin);
@@ -105,7 +125,17 @@ static class TabLayoutHost
     }
 
     // Read the layout the browser has right now, then switch to `target` if given.
+    // Runs under SyncLock so the watcher never sees a half-done switch.
     static string Swap(string id, string target)
+    {
+        lock (SyncLock)
+        {
+            string reply = SwapLocked(id, target);
+            return reply;
+        }
+    }
+
+    static string SwapLocked(string id, string target)
     {
         IntPtr fg = IntPtr.Zero;
         uint threadId = 0, pid = 0;
@@ -148,8 +178,61 @@ static class TabLayoutHost
             }
         }
 
+        // From here on, only changes made after this switch count as "you changed it".
+        generation++;
+        baseline = now;
+        browserWasInFront = true;
+
         return "{\"id\":" + id + ",\"foreground\":true,\"prev\":" + Json(Hex(prev)) +
-               ",\"now\":" + Json(Hex(now)) + ",\"applied\":" + (applied ? "true" : "false") + "}";
+               ",\"now\":" + Json(Hex(now)) + ",\"applied\":" + (applied ? "true" : "false") +
+               ",\"gen\":" + generation + "}";
+    }
+
+    // Watches for layout changes you make (Alt+Shift, Win+Space, the taskbar) while the
+    // browser is in front, and reports them right away so they are saved even if the
+    // browser is closed without switching tabs first.
+    static void WatchLayout()
+    {
+        while (true)
+        {
+            Thread.Sleep(PollMs);
+            string evt = null;
+            try
+            {
+                lock (SyncLock)
+                {
+                    IntPtr fg = GetForegroundWindow();
+                    uint pid = 0, tid = 0;
+                    if (fg != IntPtr.Zero) tid = GetWindowThreadProcessId(fg, out pid);
+                    if (fg == IntPtr.Zero || !browserPids.Contains(pid))
+                    {
+                        browserWasInFront = false;
+                        continue;
+                    }
+
+                    IntPtr current = GetKeyboardLayout(tid);
+                    if (!browserWasInFront)
+                    {
+                        // Just came back to the browser: whatever layout it has now came from
+                        // elsewhere, not from you choosing it on this site. The extension
+                        // re-applies the site's layout on focus; don't report this one.
+                        browserWasInFront = true;
+                        baseline = current;
+                        continue;
+                    }
+                    if (current != baseline && current != IntPtr.Zero)
+                    {
+                        baseline = current;
+                        evt = "{\"event\":\"layout\",\"hkl\":" + Json(Hex(current)) + ",\"gen\":" + generation + "}";
+                    }
+                }
+                if (evt != null) WriteMessage(evt);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("TabLayoutHost watcher: " + ex.Message);
+            }
+        }
     }
 
     static string List(string id)

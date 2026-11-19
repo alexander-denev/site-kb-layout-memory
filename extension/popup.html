@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<style> body { width: 330px; } </style>
+</head>
+<body>
+  <div id="error" class="status bad hidden"></div>
+
+  <div id="nosite" class="hidden">
+    <h1>Not a website</h1>
+    <p class="muted">Pages like the new tab page or browser settings don't have a remembered layout. The layout stays as it is here.</p>
+  </div>
+
+  <div id="site" class="hidden">
+    <h1 id="key"></h1>
+    <div class="muted" id="scopeNote"></div>
+
+    <div class="row">
+      <label for="layout">Keyboard layout for this site</label>
+      <select id="layout"></select>
+    </div>
+
+    <label><input type="checkbox" id="locked"> Always use this layout here <span class="muted">(don't save my changes on this site)</span></label>
+
+    <h2 id="scopeTitle"></h2>
+    <label><input type="radio" name="scope" value="domain"> <span id="scopeDomain"></span></label>
+    <label><input type="radio" name="scope" value="host"> Separate layout for each subdomain</label>
+  </div>
+
+  <p class="row"><a href="#" id="settings">All settings and saved sites</a></p>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

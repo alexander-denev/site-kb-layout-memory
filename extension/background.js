@@ -1,29 +1,43 @@
-// Tab Layout Memory — background service worker.
+// Site Layout Memory - background service worker.
 //
-// How it works:
-//   Windows keeps one keyboard layout for the whole browser, because every tab
-//   lives in the same browser process. So whenever you switch to another tab
-//   (or another browser window), we ask the helper program to:
-//     1. read the layout that is active right now  -> that belongs to the tab you are leaving
-//     2. switch to the layout remembered for the tab you are entering (if any)
-//   That is exactly what Windows does per window, just one level deeper.
+// Every website remembers its own Windows keyboard layout, saved on disk so it
+// survives browser restarts and reboots.
+//
+//  - "Site" = the registrable domain (mail.google.com -> google.com, bbc.co.uk stays
+//    bbc.co.uk) or, if you choose, each subdomain separately. Configurable globally
+//    and per domain.
+//  - When you switch tab, switch browser window, come back to the browser, or a tab
+//    navigates to another site, that site's layout is applied.
+//  - When you change the layout while on a site, the helper reports it within a
+//    quarter second and it is saved for that site straight away.
+
+importScripts("vendor/tldts.umd.min.js");
 
 const HOST_NAME = "com.tablayoutmemory.host";
-const DEFAULT_SETTINGS = { newTabMode: "keep", newTabLayout: "" };
+const DEFAULT_SETTINGS = {
+  scope: "domain",        // "domain" = whole site, "host" = each subdomain separately
+  siteScopes: {},         // per-domain override: { "google.com": "host" }
+  newSiteMode: "keep",    // "keep" = start with the active layout, "fixed" = use newSiteLayout
+  newSiteLayout: "",
+};
 
 // ---------------------------------------------------------------------------
-// Native helper connection (request/response over one persistent port).
-// An open native port also keeps this service worker alive.
+// Helper connection
 // ---------------------------------------------------------------------------
 let port = null;
 let nextId = 1;
 const pending = new Map();
-let lastHostError = null;
+let hostGen = 0; // generation of the helper's last switch; older change reports are stale
 
 function getPort() {
   if (port) return port;
+  hostGen = 0;
   port = chrome.runtime.connectNative(HOST_NAME);
   port.onMessage.addListener((msg) => {
+    if (msg && msg.event === "layout") {
+      enqueue(() => onLayoutChanged(msg.hkl, msg.gen));
+      return;
+    }
     const p = pending.get(msg && msg.id);
     if (p) {
       pending.delete(msg.id);
@@ -32,11 +46,11 @@ function getPort() {
     }
   });
   port.onDisconnect.addListener(() => {
-    lastHostError = (chrome.runtime.lastError && chrome.runtime.lastError.message) || "Helper disconnected";
+    const err = (chrome.runtime.lastError && chrome.runtime.lastError.message) || "Helper disconnected";
     port = null;
     for (const p of pending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(lastHostError));
+      p.reject(new Error(err));
     }
     pending.clear();
   });
@@ -58,158 +72,269 @@ function callHost(cmd, args = {}) {
       reject(e);
     }
   }).then((msg) => {
-    lastHostError = null;
+    if (msg.error) throw new Error(msg.error);
     return msg;
   });
 }
 
 // ---------------------------------------------------------------------------
-// State: which layout each tab had, and which tab we think is in front.
-// Mirrored to storage.session so it survives a service-worker restart
-// (it is cleared when the browser closes, like Windows forgets closed windows).
+// Storage
+//   storage.local   sites:    { "google.com": { hkl: "0x4220422", locked: true } }   (on disk)
+//   storage.sync    settings  (DEFAULT_SETTINGS)                                     (on disk, synced)
+//   storage.session focus:    { tabId, key, focused }   which site is in front now
 // ---------------------------------------------------------------------------
-let state = null;
-
-async function getState() {
-  if (!state) {
-    const s = await chrome.storage.session.get(["layouts", "current"]);
-    state = { layouts: s.layouts || {}, current: s.current ?? null };
-  }
-  return state;
-}
-
-function saveState() {
-  return chrome.storage.session.set({ layouts: state.layouts, current: state.current });
-}
-
 async function getSettings() {
-  return chrome.storage.sync.get(DEFAULT_SETTINGS);
+  const s = await chrome.storage.sync.get(DEFAULT_SETTINGS);
+  s.siteScopes = s.siteScopes || {};
+  return s;
 }
 
-// All events go through one queue so quick tab-hopping can't interleave.
+async function getSites() {
+  const { sites } = await chrome.storage.local.get({ sites: {} });
+  return sites;
+}
+
+async function setSites(sites) {
+  await chrome.storage.local.set({ sites });
+}
+
+async function getFocus() {
+  const { focus } = await chrome.storage.session.get({ focus: { tabId: null, key: null, focused: true } });
+  return focus;
+}
+
+async function setFocus(focus) {
+  await chrome.storage.session.set({ focus });
+}
+
+// Save `hkl` as the layout of `key` (unless the site is locked).
+async function learn(key, hkl) {
+  if (!key || !hkl) return;
+  const sites = await getSites();
+  const entry = sites[key] || {};
+  if (entry.locked || entry.hkl === hkl) return;
+  sites[key] = { ...entry, hkl };
+  await setSites(sites);
+}
+
+// ---------------------------------------------------------------------------
+// Which site is this URL?
+// ---------------------------------------------------------------------------
+function siteInfo(url, settings) {
+  let u;
+  try { u = new URL(url); } catch (_) { return null; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null; // new tab page, settings, files...
+  const host = u.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+  if (!host) return null;
+  const domain = tldts.getDomain(host, { allowPrivateDomains: true }) || host; // localhost, IPs -> as is
+  const scope = settings.siteScopes[domain] || settings.scope;
+  return { key: scope === "host" ? host : domain, domain, host, scope };
+}
+
+function savedLayout(info, sites) {
+  const own = sites[info.key];
+  if (own && own.hkl) return own.hkl;
+  // Splitting a domain into subdomains: until a subdomain has its own layout,
+  // fall back to what the whole site had.
+  if (info.key !== info.domain && sites[info.domain] && sites[info.domain].hkl) return sites[info.domain].hkl;
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Core
+// ---------------------------------------------------------------------------
 let queue = Promise.resolve();
 function enqueue(fn) {
-  queue = queue.then(fn).catch((e) => console.warn("[Tab Layout Memory]", e && e.message ? e.message : e));
+  queue = queue.then(fn).catch((e) => console.warn("[Site Layout Memory]", e && e.message ? e.message : e));
   return queue;
 }
 
-// The core: the user is now looking at `tabId`.
-async function switchTo(tabId) {
-  const st = await getState();
-  if (tabId == null || tabId === st.current) return;
+// `tab` is now what you're looking at.
+//   force:       apply even if it's the same site as before (focus came back)
+//   fromOutside: the active layout came from another app, so don't save it for any site
+async function focusOn(tab, { force = false, fromOutside = false } = {}) {
+  if (!tab) return;
+  const focus = await getFocus();
+  const settings = await getSettings();
+  const info = siteInfo(tab.url || "", settings);
+  const key = info ? info.key : null;
 
-  let target = st.layouts[tabId] || "";
-  if (!target) {
-    const settings = await getSettings();
-    if (settings.newTabMode === "fixed" && settings.newTabLayout) target = settings.newTabLayout;
+  if (!info) {
+    // Not a website: leave the layout as it is and don't remember anything.
+    await setFocus({ ...focus, tabId: tab.id, key: null });
+    return;
+  }
+  if (!force && key === focus.key) {
+    await setFocus({ ...focus, tabId: tab.id });
+    return;
   }
 
-  const res = await callHost("swap", { target });
+  const sites = await getSites();
+  let target = savedLayout(info, sites);
+  if (!target && settings.newSiteMode === "fixed") target = settings.newSiteLayout;
 
-  // If the browser was not the foreground app (e.g. a tab changed while you were
-  // in another program), nothing was read or changed. We keep `current` as it was,
-  // so the swap happens properly when the browser window gets focus again.
+  const res = await callHost("swap", { target: target || "" });
+  // Browser isn't the window in front (e.g. a tab changed while you were in another
+  // program): nothing changed; it will be applied when you come back.
   if (!res.foreground) return;
+  hostGen = res.gen;
 
-  if (st.current != null && res.prev && (await tabStillOpen(st.current))) st.layouts[st.current] = res.prev;
-  if (res.now) st.layouts[tabId] = res.now;
-  st.current = tabId;
-  await saveState();
+  // A change you made a split second before switching may not have been reported
+  // yet; the helper hands it back as `prev`.
+  if (!fromOutside && focus.key && focus.key !== key && res.prev) await learn(focus.key, res.prev);
+  // A site seen for the first time keeps the layout it started with.
+  if (!sites[key] && res.now) await learn(key, res.now);
+
+  await setFocus({ ...focus, tabId: tab.id, key, focused: true });
 }
 
-async function tabStillOpen(tabId) {
-  try {
-    await chrome.tabs.get(tabId);
-    return true;
-  } catch (_) {
-    return false;
-  }
+async function onLayoutChanged(hkl, gen) {
+  if (gen !== hostGen) return; // reported before our last switch: belonged to the previous site
+  const focus = await getFocus();
+  if (focus.key && focus.focused !== false) await learn(focus.key, hkl);
 }
 
-async function activeTabOfWindow(windowId) {
+async function activeTab(windowId) {
   const [tab] = await chrome.tabs.query({ active: true, windowId });
-  return tab ? tab.id : null;
+  return tab || null;
 }
 
-// Record which tab is in front without changing anything (on install / browser start).
-async function syncCurrentTab() {
-  try {
-    const win = await chrome.windows.getLastFocused();
-    const st = await getState();
-    if (st.current == null && win) {
-      st.current = await activeTabOfWindow(win.id);
-      await saveState();
-    }
-  } catch (_) { /* no windows yet */ }
+async function lastFocusedWindowId() {
+  try { return (await chrome.windows.getLastFocused()).id; } catch (_) { return null; }
+}
+
+async function reapplyFront(fromOutside) {
+  const win = await lastFocusedWindowId();
+  if (win == null) return;
+  await focusOn(await activeTab(win), { force: true, fromOutside });
 }
 
 // ---------------------------------------------------------------------------
 // Browser events
 // ---------------------------------------------------------------------------
-
-// Switched tab inside a window.
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   enqueue(async () => {
-    const focused = await chrome.windows.getLastFocused().catch(() => null);
-    // A tab changing in a background window (e.g. you closed it there) is not a
-    // switch of what you are typing into; the window-focus event handles that later.
-    if (focused && focused.id !== windowId) return;
-    await switchTo(tabId);
+    if ((await lastFocusedWindowId()) !== windowId) return; // background window; handled on focus
+    await focusOn(await chrome.tabs.get(tabId));
   });
 });
 
-// Switched to another browser window (or came back to the browser from another app).
+// Same tab, new site (link, typed address, redirect).
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  if (!change.url || !tab.active) return;
+  enqueue(async () => {
+    if ((await lastFocusedWindowId()) !== tab.windowId) return;
+    await focusOn(tab);
+  });
+});
+
 chrome.windows.onFocusChanged.addListener((windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE) return; // left the browser: Windows handles that
   enqueue(async () => {
-    const tabId = await activeTabOfWindow(windowId);
-    await switchTo(tabId);
+    const focus = await getFocus();
+    if (windowId === chrome.windows.WINDOW_ID_NONE) {
+      await setFocus({ ...focus, focused: false }); // went to another app
+      return;
+    }
+    const fromOutside = focus.focused === false;
+    await setFocus({ ...focus, focused: true });
+    // Coming back from another app (which may have changed the layout), or
+    // switching browser windows: put this site's layout back.
+    await focusOn(await activeTab(windowId), { force: true, fromOutside });
   });
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  enqueue(async () => {
-    const st = await getState();
-    delete st.layouts[tabId];
-    // `current` may still point at the closed tab until the next switch; switchTo()
-    // checks the tab still exists before saving a layout for it.
-    await saveState();
-  });
-});
+chrome.runtime.onStartup.addListener(() => enqueue(() => reapplyFront(true)));
+chrome.runtime.onInstalled.addListener(() => enqueue(() => reapplyFront(true)));
 
-// Chrome sometimes swaps a tab for a pre-rendered one with a new id.
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  enqueue(async () => {
-    const st = await getState();
-    if (st.layouts[removedTabId]) st.layouts[addedTabId] = st.layouts[removedTabId];
-    delete st.layouts[removedTabId];
-    if (st.current === removedTabId) st.current = addedTabId;
-    await saveState();
-  });
-});
+// ---------------------------------------------------------------------------
+// Popup / settings page requests (all changes go through the queue)
+// ---------------------------------------------------------------------------
+const handlers = {
+  async status() {
+    let host = { ok: false, error: "", layouts: [], active: "" };
+    try {
+      const res = await callHost("list");
+      host = { ok: true, layouts: res.layouts || [], active: res.active || "", version: res.version || "" };
+    } catch (e) {
+      host.error = e.message || String(e);
+    }
+    return { host, settings: await getSettings() };
+  },
 
-chrome.runtime.onInstalled.addListener(() => enqueue(syncCurrentTab));
-chrome.runtime.onStartup.addListener(() => enqueue(syncCurrentTab));
-chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
+  async current() {
+    const settings = await getSettings();
+    const win = await lastFocusedWindowId();
+    const tab = win == null ? null : await activeTab(win);
+    const info = tab ? siteInfo(tab.url || "", settings) : null;
+    if (!info) return { info: null };
+    const sites = await getSites();
+    return { info, entry: sites[info.key] || null, effective: savedLayout(info, sites) };
+  },
 
-// Options page asks for status / installed layouts.
+  async sites() {
+    return { sites: await getSites() };
+  },
+
+  async setSite({ key, hkl, locked }) {
+    const sites = await getSites();
+    const entry = { ...(sites[key] || {}) };
+    if (hkl !== undefined) entry.hkl = hkl;
+    if (locked !== undefined) entry.locked = !!locked;
+    sites[key] = entry;
+    await setSites(sites);
+    if (hkl !== undefined) {
+      const focus = await getFocus();
+      if (focus.key === key) {
+        const res = await callHost("swap", { target: hkl });
+        if (res.foreground) hostGen = res.gen;
+      }
+    }
+    return { ok: true };
+  },
+
+  async deleteSite({ key }) {
+    const sites = await getSites();
+    delete sites[key];
+    await setSites(sites);
+    return { ok: true };
+  },
+
+  async forgetAll() {
+    await setSites({});
+    return { ok: true };
+  },
+
+  // scope: "domain" | "host" | null (null = follow the global setting)
+  async setDomainScope({ domain, scope }) {
+    const settings = await getSettings();
+    const siteScopes = { ...settings.siteScopes };
+    if (scope && scope !== settings.scope) siteScopes[domain] = scope;
+    else delete siteScopes[domain];
+    await chrome.storage.sync.set({ siteScopes });
+    await reapplyFront(true);
+    return { ok: true };
+  },
+
+  async setGlobalScope({ scope }) {
+    const settings = await getSettings();
+    const siteScopes = {};
+    // Keep only overrides that still differ from the new global choice.
+    for (const [d, s] of Object.entries(settings.siteScopes)) if (s !== scope) siteScopes[d] = s;
+    await chrome.storage.sync.set({ scope, siteScopes });
+    await reapplyFront(true);
+    return { ok: true };
+  },
+};
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg && msg.type === "status") {
-    callHost("list")
-      .then((res) => sendResponse({ ok: true, layouts: res.layouts || [], active: res.active || "", hostVersion: res.version || "" }))
-      .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
-    return true; // async response
-  }
-  if (msg && msg.type === "forget") {
-    enqueue(async () => {
-      const st = await getState();
-      st.layouts = {};
-      await saveState();
-    }).then(() => sendResponse({ ok: true }));
-    return true;
-  }
-  return false;
+  const fn = msg && handlers[msg.type];
+  if (!fn) return false;
+  enqueue(async () => {
+    try { sendResponse(await fn(msg)); }
+    catch (e) { sendResponse({ ok: false, error: e.message || String(e) }); }
+  });
+  return true;
 });
 
-// Connect right away so the helper is ready before the first tab switch.
-try { getPort(); } catch (_) { /* reported on the options page */ }
+// Connect right away: the helper starts watching for layout changes immediately.
+try { getPort(); } catch (_) { /* shown in the popup / settings page */ }
