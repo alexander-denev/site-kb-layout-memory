@@ -9,27 +9,29 @@
 <body>
   <div id="status" class="status">Checking the helper program…</div>
 
-  <h2>What counts as one site</h2>
-  <label><input type="radio" name="scope" value="domain"> Whole domain <span class="muted">(mail.google.com and docs.google.com share one layout)</span></label>
-  <label><input type="radio" name="scope" value="host"> Each subdomain separately <span class="muted">(mail.google.com and docs.google.com each have their own)</span></label>
-  <p class="hint">You can override this for individual domains from the toolbar popup.</p>
+  <h2>Remember the layout for</h2>
+  <label><input type="radio" name="scope" value="domain"> Each domain <span class="muted">(mail.google.com and docs.google.com share one layout; kept after restart)</span></label>
+  <label><input type="radio" name="scope" value="host"> Each subdomain <span class="muted">(mail.google.com and docs.google.com each have their own; kept after restart)</span></label>
+  <label><input type="radio" name="scope" value="tab"> Each tab <span class="muted">(follows the tab wherever it goes; forgotten when the tab or browser closes)</span></label>
+  <p class="hint">You can override this for individual domains from the toolbar popup, e.g. per-domain everywhere but per-tab on one site.</p>
 
   <div id="overridesBox" class="hidden">
     <h2>Domains with their own rule</h2>
     <table><tbody id="overrides"></tbody></table>
   </div>
 
-  <h2>A site you haven't visited before</h2>
+  <h2>A site or tab seen for the first time</h2>
   <label><input type="radio" name="newSite" value="keep"> Keeps the layout that's active, and remembers it</label>
   <label><input type="radio" name="newSite" value="fixed"> Starts with <select id="newSiteLayout"></select></label>
 
   <h2>Remembered sites <span class="muted" id="count"></span></h2>
+  <p class="hint" id="tabNote"></p>
   <p><input type="text" id="filter" placeholder="Filter…" style="width: 220px"></p>
   <table>
     <thead><tr><th>Site</th><th>Layout</th><th title="Always use this layout; don't save changes">Locked</th><th></th></tr></thead>
     <tbody id="sites"></tbody>
   </table>
-  <p><button id="forgetAll">Forget all sites</button></p>
+  <p><button id="forgetAll">Forget all sites and tabs</button></p>
 
   <script src="common.js"></script>
   <script src="options.js"></script>

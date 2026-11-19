@@ -27,7 +27,7 @@ async function render() {
   for (const [domain, scope] of entries) {
     const tr = tbody.insertRow();
     tr.insertCell().textContent = domain;
-    tr.insertCell().textContent = scope === "host" ? "Each subdomain separately" : "Whole domain";
+    tr.insertCell().textContent = { host: "Each subdomain", tab: "Each tab", domain: "Whole domain" }[scope] || scope;
     const btn = document.createElement("button");
     btn.textContent = "Use default";
     btn.onclick = async () => { await ask("setDomainScope", { domain, scope: null }); render(); };
@@ -38,7 +38,10 @@ async function render() {
 }
 
 async function renderSites() {
-  const { sites } = await ask("sites");
+  const { sites, tabCount } = await ask("sites");
+  $("tabNote").textContent = tabCount
+    ? `Plus ${tabCount} tab${tabCount === 1 ? "" : "s"} with their own layout this session (not listed; forgotten when the browser closes).`
+    : "";
   const filter = $("filter").value.trim().toLowerCase();
   const keys = Object.keys(sites).sort((a, b) => a.localeCompare(b));
   $("count").textContent = keys.length ? `(${keys.length})` : "";
@@ -79,7 +82,7 @@ for (const r of document.querySelectorAll('input[name="newSite"]')) {
 $("newSiteLayout").onchange = () => chrome.storage.sync.set({ newSiteLayout: $("newSiteLayout").value });
 $("filter").oninput = renderSites;
 $("forgetAll").onclick = async () => {
-  if (!confirm("Forget the saved layout of every site?")) return;
+  if (!confirm("Forget the saved layout of every site and tab?")) return;
   await ask("forgetAll");
   renderSites();
 };

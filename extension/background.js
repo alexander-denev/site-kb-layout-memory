@@ -1,22 +1,25 @@
 // Site Layout Memory - background service worker.
 //
-// Every website remembers its own Windows keyboard layout, saved on disk so it
-// survives browser restarts and reboots.
+// Remembers a Windows keyboard layout per "place", where a place is one of:
+//   domain - the registrable domain (mail.google.com -> google.com; bbc.co.uk stays bbc.co.uk)
+//   host   - each subdomain separately (mail.google.com, docs.google.com)
+//   tab    - each browser tab, whatever site it shows
+// The choice is global, with optional per-domain overrides.
 //
-//  - "Site" = the registrable domain (mail.google.com -> google.com, bbc.co.uk stays
-//    bbc.co.uk) or, if you choose, each subdomain separately. Configurable globally
-//    and per domain.
-//  - When you switch tab, switch browser window, come back to the browser, or a tab
-//    navigates to another site, that site's layout is applied.
-//  - When you change the layout while on a site, the helper reports it within a
-//    quarter second and it is saved for that site straight away.
+// Domain/subdomain layouts are saved on disk (storage.local) and survive reboots.
+// Tab layouts live in storage.session: tab ids change every browser session, so
+// they are forgotten when the browser closes, the way Windows forgets a closed window.
+//
+// When you switch tab, switch browser window, come back to the browser, or a tab
+// navigates elsewhere, the layout for the new place is applied. When you change the
+// layout, the helper reports it within a quarter second and it's saved immediately.
 
 importScripts("vendor/tldts.umd.min.js");
 
 const HOST_NAME = "com.tablayoutmemory.host";
 const DEFAULT_SETTINGS = {
-  scope: "domain",        // "domain" = whole site, "host" = each subdomain separately
-  siteScopes: {},         // per-domain override: { "google.com": "host" }
+  scope: "domain",        // "domain" = whole site, "host" = each subdomain, "tab" = each tab
+  siteScopes: {},         // per-domain override: { "google.com": "host", "chatgpt.com": "tab" }
   newSiteMode: "keep",    // "keep" = start with the active layout, "fixed" = use newSiteLayout
   newSiteLayout: "",
 };
@@ -79,9 +82,10 @@ function callHost(cmd, args = {}) {
 
 // ---------------------------------------------------------------------------
 // Storage
-//   storage.local   sites:    { "google.com": { hkl: "0x4220422", locked: true } }   (on disk)
-//   storage.sync    settings  (DEFAULT_SETTINGS)                                     (on disk, synced)
-//   storage.session focus:    { tabId, key, focused }   which site is in front now
+//   storage.local   sites:    { "google.com": { hkl: "0x4220422", locked: true } }  (on disk)
+//   storage.session tabs:     { "tab:1234":   { hkl: "0x4090409" } }               (memory, this session)
+//   storage.sync    settings  (DEFAULT_SETTINGS)                                    (on disk, synced)
+//   storage.session focus:    { tabId, key, focused }   which place is in front now
 // ---------------------------------------------------------------------------
 async function getSettings() {
   const s = await chrome.storage.sync.get(DEFAULT_SETTINGS);
@@ -89,13 +93,44 @@ async function getSettings() {
   return s;
 }
 
+const tabKey = (tabId) => "tab:" + tabId;
+const isTabKey = (key) => typeof key === "string" && key.startsWith("tab:");
+
+// Each key lives in exactly one place: tab keys in session storage, sites on disk.
+function areaFor(key) {
+  return isTabKey(key)
+    ? { area: chrome.storage.session, name: "tabs" }
+    : { area: chrome.storage.local, name: "sites" };
+}
+
+async function getMap(key) {
+  const { area, name } = areaFor(key);
+  const got = await area.get({ [name]: {} });
+  return got[name] || {};
+}
+
+async function getEntry(key) {
+  if (!key) return null;
+  return (await getMap(key))[key] || null;
+}
+
+// entry = null deletes it
+async function setEntry(key, entry) {
+  const { area, name } = areaFor(key);
+  const map = await getMap(key);
+  if (entry) map[key] = entry;
+  else delete map[key];
+  await area.set({ [name]: map });
+}
+
 async function getSites() {
   const { sites } = await chrome.storage.local.get({ sites: {} });
   return sites;
 }
 
-async function setSites(sites) {
-  await chrome.storage.local.set({ sites });
+async function getTabEntries() {
+  const { tabs } = await chrome.storage.session.get({ tabs: {} });
+  return tabs;
 }
 
 async function getFocus() {
@@ -107,36 +142,45 @@ async function setFocus(focus) {
   await chrome.storage.session.set({ focus });
 }
 
-// Save `hkl` as the layout of `key` (unless the site is locked).
+// Save `hkl` as the layout of `key` (unless that place is locked).
 async function learn(key, hkl) {
   if (!key || !hkl) return;
-  const sites = await getSites();
-  const entry = sites[key] || {};
+  const entry = (await getEntry(key)) || {};
   if (entry.locked || entry.hkl === hkl) return;
-  sites[key] = { ...entry, hkl };
-  await setSites(sites);
+  await setEntry(key, { ...entry, hkl });
 }
 
 // ---------------------------------------------------------------------------
-// Which site is this URL?
+// Which place is this tab?
+// Returns { key, scope, domain, host } or null for "leave the layout alone".
 // ---------------------------------------------------------------------------
-function siteInfo(url, settings) {
-  let u;
-  try { u = new URL(url); } catch (_) { return null; }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return null; // new tab page, settings, files...
+function placeInfo(tab, settings) {
+  let u = null;
+  try { u = new URL(tab.url || ""); } catch (_) { /* no URL yet */ }
+  const isWeb = u && (u.protocol === "http:" || u.protocol === "https:") && u.hostname;
+
+  if (!isWeb) {
+    // New tab page, browser settings, local files: no domain. They only get a
+    // layout when everything is per tab.
+    return settings.scope === "tab" ? { key: tabKey(tab.id), scope: "tab", domain: null, host: null } : null;
+  }
+
   const host = u.hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
-  if (!host) return null;
   const domain = tldts.getDomain(host, { allowPrivateDomains: true }) || host; // localhost, IPs -> as is
   const scope = settings.siteScopes[domain] || settings.scope;
-  return { key: scope === "host" ? host : domain, domain, host, scope };
+  const key = scope === "tab" ? tabKey(tab.id) : scope === "host" ? host : domain;
+  return { key, scope, domain, host };
 }
 
-function savedLayout(info, sites) {
-  const own = sites[info.key];
+async function savedLayout(info) {
+  const own = await getEntry(info.key);
   if (own && own.hkl) return own.hkl;
-  // Splitting a domain into subdomains: until a subdomain has its own layout,
-  // fall back to what the whole site had.
-  if (info.key !== info.domain && sites[info.domain] && sites[info.domain].hkl) return sites[info.domain].hkl;
+  // A domain just split into subdomains: until a subdomain has its own layout,
+  // use what the whole domain had. (Tabs start fresh, like new windows.)
+  if (info.scope === "host" && info.key !== info.domain) {
+    const whole = await getEntry(info.domain);
+    if (whole && whole.hkl) return whole.hkl;
+  }
   return "";
 }
 
@@ -156,7 +200,7 @@ async function focusOn(tab, { force = false, fromOutside = false } = {}) {
   if (!tab) return;
   const focus = await getFocus();
   const settings = await getSettings();
-  const info = siteInfo(tab.url || "", settings);
+  const info = placeInfo(tab, settings);
   const key = info ? info.key : null;
 
   if (!info) {
@@ -169,8 +213,8 @@ async function focusOn(tab, { force = false, fromOutside = false } = {}) {
     return;
   }
 
-  const sites = await getSites();
-  let target = savedLayout(info, sites);
+  const known = !!(await getEntry(key));
+  let target = await savedLayout(info);
   if (!target && settings.newSiteMode === "fixed") target = settings.newSiteLayout;
 
   const res = await callHost("swap", { target: target || "" });
@@ -182,8 +226,8 @@ async function focusOn(tab, { force = false, fromOutside = false } = {}) {
   // A change you made a split second before switching may not have been reported
   // yet; the helper hands it back as `prev`.
   if (!fromOutside && focus.key && focus.key !== key && res.prev) await learn(focus.key, res.prev);
-  // A site seen for the first time keeps the layout it started with.
-  if (!sites[key] && res.now) await learn(key, res.now);
+  // A place seen for the first time keeps the layout it started with.
+  if (!known && res.now) await learn(key, res.now);
 
   await setFocus({ ...focus, tabId: tab.id, key, focused: true });
 }
@@ -243,6 +287,22 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   });
 });
 
+// Per-tab layouts: forget a tab when it closes.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  enqueue(() => setEntry(tabKey(tabId), null));
+});
+
+// Chrome sometimes swaps a tab for a pre-rendered one with a new id: carry the layout over.
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  enqueue(async () => {
+    const entry = await getEntry(tabKey(removedTabId));
+    if (entry) await setEntry(tabKey(addedTabId), entry);
+    await setEntry(tabKey(removedTabId), null);
+    const focus = await getFocus();
+    if (focus.key === tabKey(removedTabId)) await setFocus({ ...focus, tabId: addedTabId, key: tabKey(addedTabId) });
+  });
+});
+
 chrome.runtime.onStartup.addListener(() => enqueue(() => reapplyFront(true)));
 chrome.runtime.onInstalled.addListener(() => enqueue(() => reapplyFront(true)));
 
@@ -265,23 +325,20 @@ const handlers = {
     const settings = await getSettings();
     const win = await lastFocusedWindowId();
     const tab = win == null ? null : await activeTab(win);
-    const info = tab ? siteInfo(tab.url || "", settings) : null;
+    const info = tab ? placeInfo(tab, settings) : null;
     if (!info) return { info: null };
-    const sites = await getSites();
-    return { info, entry: sites[info.key] || null, effective: savedLayout(info, sites) };
+    return { info, entry: await getEntry(info.key), effective: await savedLayout(info) };
   },
 
   async sites() {
-    return { sites: await getSites() };
+    return { sites: await getSites(), tabCount: Object.keys(await getTabEntries()).length };
   },
 
   async setSite({ key, hkl, locked }) {
-    const sites = await getSites();
-    const entry = { ...(sites[key] || {}) };
+    const entry = { ...((await getEntry(key)) || {}) };
     if (hkl !== undefined) entry.hkl = hkl;
     if (locked !== undefined) entry.locked = !!locked;
-    sites[key] = entry;
-    await setSites(sites);
+    await setEntry(key, entry);
     if (hkl !== undefined) {
       const focus = await getFocus();
       if (focus.key === key) {
@@ -293,18 +350,17 @@ const handlers = {
   },
 
   async deleteSite({ key }) {
-    const sites = await getSites();
-    delete sites[key];
-    await setSites(sites);
+    await setEntry(key, null);
     return { ok: true };
   },
 
   async forgetAll() {
-    await setSites({});
+    await chrome.storage.local.set({ sites: {} });
+    await chrome.storage.session.set({ tabs: {} });
     return { ok: true };
   },
 
-  // scope: "domain" | "host" | null (null = follow the global setting)
+  // scope: "domain" | "host" | "tab" | null (null = follow the global setting)
   async setDomainScope({ domain, scope }) {
     const settings = await getSettings();
     const siteScopes = { ...settings.siteScopes };
